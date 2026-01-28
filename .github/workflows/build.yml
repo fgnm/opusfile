@@ -189,16 +189,13 @@ jobs:
 
       - name: Merge Libraries
         run: |
-          # 1. Define Paths
+          # 1. Define Absolute Paths for Input (Extraction)
           VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
           BUILD_DIR="$(pwd)/build"
-          MERGED_LIB="build/libopusfile_combined.a"
-
-          # 2. Find the input libraries (Handle .a or .lib extensions)
-          # We use 'find' + 'head' to handle potential naming variations (libopus.a vs opus.lib)
+          
+          # 2. Find the input libraries
           LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
           LIBOPUS=$(find "$VCPKG_LIB_DIR" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
-          # libopusfile might be in build/ or build/Release/ depending on generator
           LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
 
           echo "Found libraries to merge:"
@@ -208,30 +205,47 @@ jobs:
 
           # 3. Merge Strategy
           if [ "${{ runner.os }}" = "macOS" ]; then
-            # --- macOS / iOS Strategy (libtool) ---
-            echo "Detected macOS/iOS. Using libtool."
-            libtool -static -o "$MERGED_LIB" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
+            # macOS uses libtool, which handles absolute paths fine
+            libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
 
           else
-            # --- Linux / Windows / Android Strategy (ar extract & repack) ---
             echo "Detected Linux/Windows. Using ar repack strategy."
             
-            # Create a temp dir for extraction
+            # Prepare directory
             mkdir -p build/merged_objs
             cd build/merged_objs
-
-            # Extract into separate subfolders to avoid object filename collisions
-            # (e.g. if both libs have a 'version.o')
-            mkdir ogg && cd ogg && ar x "$LIBOGG" && cd ..
-            mkdir opus && cd opus && ar x "$LIBOPUS" && cd ..
-            mkdir opusfile && cd opusfile && ar x "$LIBOPUSFILE" && cd ..
-
-            # Repackage all objects into one static lib
-            # We use ../ because we are inside build/merged_objs
-            ar cr ../../"$MERGED_LIB" ogg/*.o opus/*.o opusfile/*.o
             
-            # Verify creation
-            ls -l ../../"$MERGED_LIB"
+            # Define Output Path RELATIVE to build/merged_objs
+            # This avoids Windows drive letter issues (e.g. /d/a/ vs D:\a\)
+            MERGED_LIB_REL="../../libopusfile_combined.a"
+            rm -f "$MERGED_LIB_REL"
+
+            # 4. Extract and Append (Folder by Folder)
+            # We cd into each folder so we can use "*.o" safely without path prefixes
+            
+            echo "Processing Ogg..."
+            mkdir ogg && cd ogg
+            ar x "$LIBOGG"
+            ar crs "$MERGED_LIB_REL" *.o
+            cd ..
+            
+            echo "Processing Opus..."
+            mkdir opus && cd opus
+            ar x "$LIBOPUS"
+            ar crs "$MERGED_LIB_REL" *.o
+            cd ..
+            
+            echo "Processing OpusFile..."
+            mkdir opusfile && cd opusfile
+            ar x "$LIBOPUSFILE"
+            ar crs "$MERGED_LIB_REL" *.o
+            cd ..
+
+            # 5. Final Indexing
+            ranlib "$MERGED_LIB_REL"
+            
+            echo "Success! Created:"
+            ls -l "$MERGED_LIB_REL"
           fi
 
       - name: Upload Binaries
