@@ -16,7 +16,6 @@ jobs:
             triplet: x64-linux
 
           # --- WINDOWS (MinGW) ---
-          # Note: Windows runners are slower to setup
           - name: Windows MinGW x64
             os: windows-latest
             triplet: x64-mingw-static
@@ -31,7 +30,6 @@ jobs:
           - name: Android ARM64
             os: ubuntu-latest
             triplet: arm64-android
-            # Vcpkg handles the NDK, but we pass these to ensure CMake knows the target
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
 
           # --- iOS ---
@@ -61,7 +59,6 @@ jobs:
             setup_cmd: |
               sudo apt-get update
               sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            # specific exports to force vcpkg to use these compilers
             cc_var: aarch64-linux-gnu-gcc
             cxx_var: aarch64-linux-gnu-g++
 
@@ -89,19 +86,15 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      # 1. Install System Compilers (if needed)
       - name: Install System Dependencies
         if: matrix.setup_cmd
         run: ${{ matrix.setup_cmd }}
         shell: bash
 
-      # 2. Manual Vcpkg Setup (The Fix)
-      # We clone specifically to a folder and bootstrap it.
       - name: Setup Vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
           cd $VCPKG_ROOT
-          # Bootstrap script depends on OS
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./bootstrap-vcpkg.bat
           else
@@ -109,8 +102,6 @@ jobs:
           fi
         shell: bash
 
-      # 3. Install LibOpus and LibOgg
-      # We explicitly export CC/CXX so vcpkg uses the cross-compilers for Linux targets
       - name: Install Dependencies
         run: |
           if [ ! -z "${{ matrix.cc_var }}" ]; then
@@ -118,10 +109,10 @@ jobs:
             export CXX=${{ matrix.cxx_var }}
           fi
           
-          $VCPKG_ROOT/vcpkg install libogg libopus --triplet ${{ matrix.triplet }}
+          # FIXED: Used 'opus' instead of 'libopus'
+          $VCPKG_ROOT/vcpkg install libogg opus --triplet ${{ matrix.triplet }}
         shell: bash
 
-      # 4. Configure CMake
       - name: Configure CMake
         run: |
           cmake -B build -S . \
@@ -133,11 +124,9 @@ jobs:
             -DOP_DISABLE_DOCS=ON \
             ${{ matrix.extra_cmake_args }}
 
-      # 5. Build
       - name: Build
         run: cmake --build build --config Release
 
-      # 6. Upload Artifacts
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
         with:
