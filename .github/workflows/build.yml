@@ -1,99 +1,140 @@
-name: GitHub CI
+name: Build LibOpusFile
 
-on:
-  push:
-  pull_request:
-  schedule:
-    - cron: '0 0 1 * *'
+on: [push, pull_request]
 
 jobs:
   build:
-    strategy:
-      matrix:
-        name:
-          [
-            ubuntu-autotools,
-            ubuntu-cmake,
-            ubuntu-makefile,
-            macos-autotools,
-            macos-cmake,
-            macos-makefile,
-          ]
-        include:
-
-          - name: ubuntu-autotools
-            os: ubuntu-latest
-            build-system: autotools
-
-          - name: ubuntu-cmake
-            os: ubuntu-latest
-            build-system: cmake
-
-          - name: ubuntu-makefile
-            os: ubuntu-latest
-            build-system: makefile
-
-          - name: macos-autotools
-            os: macos-latest
-            build-system: autotools
-
-          - name: macos-cmake
-            os: macos-latest
-            build-system: cmake
-
-          - name: macos-makefile
-            os: macos-latest
-            build-system: makefile
-
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- DESKTOP (Linux x64) ---
+          - name: Linux x86_64
+            os: ubuntu-latest
+            triplet: x64-linux
+            # No extra setup needed for native linux
+
+          # --- WINDOWS (MinGW) ---
+          - name: Windows MinGW x64
+            os: windows-latest
+            triplet: x64-mingw-static
+            setup_cmd: choco install mingw
+
+          - name: Windows MinGW x86
+            os: windows-latest
+            triplet: x86-mingw-static
+            setup_cmd: choco install mingw --forcex86
+
+          # --- ANDROID ---
+          - name: Android ARM64
+            os: ubuntu-latest
+            triplet: arm64-android
+            extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
+
+          # --- iOS ---
+          - name: iOS ARM64
+            os: macos-latest
+            triplet: arm64-ios
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
+
+          - name: iOS Simulator (x64)
+            os: macos-latest
+            triplet: x64-ios
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
+
+          # --- macOS ---
+          - name: macOS ARM64 (Apple Silicon)
+            os: macos-latest
+            triplet: arm64-osx
+
+          - name: macOS x64 (Intel)
+            os: macos-latest
+            triplet: x64-osx
+
+          # --- CROSS-COMPILE LINUX (The tricky ones) ---
+          # Vcpkg 'community' triplets for Linux cross-compile require 
+          # us to install the GCC cross-compilers on the runner first.
+          - name: Linux ARM64 (aarch64)
+            os: ubuntu-latest
+            triplet: arm64-linux
+            setup_cmd: |
+              sudo apt-get update
+              sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            env_vars: "CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++"
+
+          - name: Linux ARM (armhf)
+            os: ubuntu-latest
+            triplet: arm-linux
+            setup_cmd: |
+              sudo apt-get update
+              sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+            env_vars: "CC=arm-linux-gnueabihf-gcc CXX=arm-linux-gnueabihf-g++"
+
+          - name: Linux RISC-V 64
+            os: ubuntu-latest
+            triplet: riscv64-linux
+            setup_cmd: |
+              sudo apt-get update
+              sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+            env_vars: "CC=riscv64-linux-gnu-gcc CXX=riscv64-linux-gnu-g++"
 
     env:
-      BUILD: _build
+      # Tell vcpkg where to install packages
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
+
+      # 1. Install System Dependencies (Cross Compilers or MinGW tools)
+      - name: Install System Dependencies
+        if: matrix.setup_cmd
+        run: ${{ matrix.setup_cmd }}
+        shell: bash
+
+      # 2. Setup Vcpkg
+      - name: Setup Vcpkg
+        uses: lukka/run-vcpkg@v11
         with:
-          fetch-depth: 0
+          vcpkgGitCommitId: 'master' # Uses latest vcpkg
+          vcpkgDirectory: ${{ github.workspace }}/vcpkg
 
-      - name: Install Linux dependencies
-        if: startsWith(matrix.os,'ubuntu')
+      # 3. Install Dependencies (Ogg, Opus) using Vcpkg
+      # This builds libogg and libopus for the specific target architecture
+      - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libopus-dev libogg-dev libssl-dev
-          sudo apt-get install -y doxygen graphviz
+          # Export CC/CXX for Linux cross-compiles if defined in matrix
+          ${{ matrix.env_vars }}
+          
+          # Install dependencies for the requested triplet
+          $VCPKG_ROOT/vcpkg install libogg libopus --triplet ${{ matrix.triplet }}
 
-      - name: Install macOS dependencies
-        if: startsWith(matrix.os,'macos')
+      # 4. Configure CMake
+      - name: Configure CMake
         run: |
-          brew bundle
+          # Use the vcpkg toolchain file so CMake can find the deps we just built
+          cmake -B build -S . \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOP_DISABLE_HTTP=ON \
+            -DOP_DISABLE_EXAMPLES=ON \
+            -DOP_DISABLE_DOCS=ON \
+            ${{ matrix.extra_cmake_args }}
 
-      - name: Build with Autotools
-        if: startsWith(matrix.build-system,'autotools')
-        run: |
-          ./autogen.sh
-          ./configure
-          make
-          make check
+      # 5. Build
+      - name: Build
+        run: cmake --build build --config Release
 
-      - name: distcheck with Autotools
-        if: startsWith(matrix.build-system,'autotools')
-        run: |
-          make distcheck
-
-      - name: Build with Makefile
-        if: startsWith(matrix.build-system,'makefile')
-        run: |
-          make -C unix
-          make -C unix check
-
-      - name: Build Documentation
-        if: ${{ ! startsWith(matrix.build-system,'cmake') }}
-        run: |
-          make -C doc
-
-      - name: Build with CMake
-        if: startsWith(matrix.build-system,'cmake')
-        run: |
-          cmake -S . -B ${{ env.BUILD }}
-          cmake --build ${{ env.BUILD }}
-          ctest --test-dir ${{ env.BUILD }} -V -C Debug
+      # 6. Upload Artifacts
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: libopusfile-${{ matrix.name }}
+          path: |
+            build/*.a
+            build/*.so
+            build/*.dylib
+            build/*.dll
+            build/Release/*.lib
