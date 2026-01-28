@@ -8,7 +8,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        shell: bash  # <--- FORCE BASH EVERYWHERE (Fixes Windows Syntax)
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -23,7 +23,6 @@ jobs:
             os: windows-latest
             triplet: x64-mingw-static
             setup_cmd: choco install mingw
-            # Force CMake to use MinGW generator, otherwise it defaults to Visual Studio
             extra_cmake_args: '-G "MinGW Makefiles"'
 
           - name: Windows MinGW x86
@@ -59,7 +58,6 @@ jobs:
             triplet: x64-osx
 
           # --- CROSS-COMPILE LINUX ---
-          # We define specific variables for the compilers here
           - name: Linux ARM64 (aarch64)
             os: ubuntu-latest
             triplet: arm64-linux
@@ -77,6 +75,8 @@ jobs:
               sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
             cross_cc: arm-linux-gnueabihf-gcc
             cross_cxx: arm-linux-gnueabihf-g++
+            # DISABLE INTRINSICS for ARM32 to fix the build failure
+            vcpkg_opts: "-DOPUS_DISABLE_INTRINSICS=ON"
 
           - name: Linux RISC-V 64
             os: ubuntu-latest
@@ -91,7 +91,6 @@ jobs:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
-      # fetch-depth: 0 fixes the "fatal: No names found" error in git describe
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
@@ -104,7 +103,6 @@ jobs:
         run: |
           git clone https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
           cd $VCPKG_ROOT
-          # Bootstrap depending on OS
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./bootstrap-vcpkg.bat
           else
@@ -113,8 +111,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # 1. Install Host Tools FIRST (using default compiler)
-          # This prevents the ARM compiler from trying to build x86 tools and crashing
+          # 1. Install Host Tools FIRST (prevents cross-compiler confusion)
           $VCPKG_ROOT/vcpkg install vcpkg-cmake --triplet=x64-linux --host-triplet=x64-linux || true
           
           # 2. Set Cross Compilers (if defined)
@@ -123,12 +120,17 @@ jobs:
             export CXX=${{ matrix.cross_cxx }}
           fi
           
-          # 3. Install Target Libraries
+          # 3. Apply Vcpkg Options (FIX for ARM32)
+          # This injects the CMake flag to disable intrinsics ONLY for steps that define vcpkg_opts
+          if [ ! -z "${{ matrix.vcpkg_opts }}" ]; then
+            export VCPKG_CMAKE_CONFIGURE_OPTIONS="${{ matrix.vcpkg_opts }}"
+          fi
+
+          # 4. Install Target Libraries
           $VCPKG_ROOT/vcpkg install libogg opus --triplet ${{ matrix.triplet }}
 
       - name: Configure CMake
         run: |
-          # Re-export cross compilers for the actual project build
           if [ ! -z "${{ matrix.cross_cc }}" ]; then
             export CC=${{ matrix.cross_cc }}
             export CXX=${{ matrix.cross_cxx }}
