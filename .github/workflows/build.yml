@@ -113,8 +113,6 @@ jobs:
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-      # Ensure Vcpkg finds the Android NDK provided by GitHub Actions
-      ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
     steps:
       - uses: actions/checkout@v3
