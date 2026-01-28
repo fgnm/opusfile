@@ -67,7 +67,7 @@ jobs:
             cross_cc: aarch64-linux-gnu-gcc
             cross_cxx: aarch64-linux-gnu-g++
 
-          # THE FIX TARGET: ARM 32-bit
+          # THE FIX TARGET: ARM 32-bit (armhf)
           - name: Linux ARM (armhf)
             os: ubuntu-latest
             triplet: arm-linux
@@ -76,6 +76,7 @@ jobs:
               sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
             cross_cc: arm-linux-gnueabihf-gcc
             cross_cxx: arm-linux-gnueabihf-g++
+            # Enable the patch step for this specific job
             patch_opus: true
 
           - name: Linux RISC-V 64
@@ -109,20 +110,22 @@ jobs:
             ./bootstrap-vcpkg.sh
           fi
 
-      # --- SURGICAL FIX FOR ARMHF ---
-      # Instead of replacing "OPTIONS", we specifically find the configuration function
-      # and insert the disable flag inside the OPTIONS list safely.
+      # --- THE "UNBREAKABLE" FIX ---
+      # This step modifies the vcpkg recipe for Opus safely.
+      # We replace the function call 'vcpkg_cmake_configure(' with one that includes our flag immediately.
+      # This avoids messing with 'vcpkg_check_features' or other parts of the file.
       - name: Patch Opus for ARM32
         if: matrix.patch_opus
         run: |
           echo "Patching Opus portfile to disable intrinsics on ARM32..."
           PORTFILE="$VCPKG_ROOT/ports/opus/portfile.cmake"
           
-          # Insert the flag specifically into the vcpkg_cmake_configure block
-          # We look for "OPTIONS" inside the configure call and append our flag
-          sed -i 's/OPTIONS/OPTIONS -DOPUS_DISABLE_INTRINSICS=ON/2' "$PORTFILE" || sed -i 's/OPTIONS/OPTIONS -DOPUS_DISABLE_INTRINSICS=ON/' "$PORTFILE"
+          # Replace the function start. 
+          # Matches "vcpkg_cmake_configure(" and inserts the option right inside the parenthesis.
+          sed -i 's/vcpkg_cmake_configure(/vcpkg_cmake_configure(OPTIONS -DOPUS_DISABLE_INTRINSICS=ON /g' "$PORTFILE"
           
-          cat "$PORTFILE" # Print file content to debug/verify
+          echo "--- PATCHED PORTFILE CONTENT ---"
+          cat "$PORTFILE"
 
       - name: Install Dependencies
         run: |
