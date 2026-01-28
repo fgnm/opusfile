@@ -187,11 +187,59 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      - name: Merge Libraries
+        run: |
+          # 1. Define Paths
+          VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
+          BUILD_DIR="build"
+          MERGED_LIB="build/libopusfile_combined.a"
+
+          # 2. Find the input libraries (Handle .a or .lib extensions)
+          # We use 'find' + 'head' to handle potential naming variations (libopus.a vs opus.lib)
+          LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
+          LIBOPUS=$(find "$VCPKG_LIB_DIR" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
+          # libopusfile might be in build/ or build/Release/ depending on generator
+          LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
+
+          echo "Found libraries to merge:"
+          echo "  - Ogg: $LIBOGG"
+          echo "  - Opus: $LIBOPUS"
+          echo "  - OpusFile: $LIBOPUSFILE"
+
+          # 3. Merge Strategy
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # --- macOS / iOS Strategy (libtool) ---
+            echo "Detected macOS/iOS. Using libtool."
+            libtool -static -o "$MERGED_LIB" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
+
+          else
+            # --- Linux / Windows / Android Strategy (ar extract & repack) ---
+            echo "Detected Linux/Windows. Using ar repack strategy."
+            
+            # Create a temp dir for extraction
+            mkdir -p build/merged_objs
+            cd build/merged_objs
+
+            # Extract into separate subfolders to avoid object filename collisions
+            # (e.g. if both libs have a 'version.o')
+            mkdir ogg && cd ogg && ar x "$LIBOGG" && cd ..
+            mkdir opus && cd opus && ar x "$LIBOPUS" && cd ..
+            mkdir opusfile && cd opusfile && ar x "$LIBOPUSFILE" && cd ..
+
+            # Repackage all objects into one static lib
+            # We use ../ because we are inside build/merged_objs
+            ar cr ../../"$MERGED_LIB" ogg/*.o opus/*.o opusfile/*.o
+            
+            # Verify creation
+            ls -l ../../"$MERGED_LIB"
+          fi
+
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
         with:
           name: libopusfile-${{ matrix.name }}
           path: |
+            build/*_combined.a
             build/*.a
             build/*.so
             build/*.dylib
