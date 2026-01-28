@@ -31,15 +31,17 @@ jobs:
             setup_cmd: choco install mingw --forcex86
             extra_cmake_args: '-G "MinGW Makefiles"'
 
-          # --- ANDROID (The Full Set) ---
+          # --- ANDROID ---
           - name: Android ARM64 (v8a)
             os: ubuntu-latest
             triplet: arm64-android
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
 
+          # THE FIX: Force NEON=ON for ARM32 because NDK r24+ requires it
           - name: Android ARM32 (v7a)
             os: ubuntu-latest
             triplet: arm-android
+            vcpkg_opts: "-DANDROID_ARM_NEON=ON"
             extra_cmake_args: "-DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-24"
 
           - name: Android x86_64
@@ -65,6 +67,7 @@ jobs:
 
           - name: iOS Simulator (ARM64)
             os: macos-latest
+            # Note: This triplet targets Apple Silicon simulators
             triplet: arm64-ios-simulator
             extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
 
@@ -110,6 +113,8 @@ jobs:
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      # Ensure Vcpkg finds the Android NDK provided by GitHub Actions
+      ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
     steps:
       - uses: actions/checkout@v3
@@ -137,7 +142,7 @@ jobs:
           echo "Patching Opus portfile to disable intrinsics on ARM32..."
           PORTFILE="$VCPKG_ROOT/ports/opus/portfile.cmake"
           
-          # Replace the function call start to inject the option
+          # Replace the function call start to inject the option safely
           sed -i 's/vcpkg_cmake_configure(/vcpkg_cmake_configure(OPTIONS -DOPUS_DISABLE_INTRINSICS=ON /g' "$PORTFILE"
           
           echo "--- PATCHED PORTFILE CONTENT ---"
@@ -153,8 +158,14 @@ jobs:
             export CC=${{ matrix.cross_cc }}
             export CXX=${{ matrix.cross_cxx }}
           fi
+
+          # 3. Apply Vcpkg Options (Fixes Android ARM32)
+          # This appends -DANDROID_ARM_NEON=ON to the configuration command
+          if [ ! -z "${{ matrix.vcpkg_opts }}" ]; then
+            export VCPKG_CMAKE_CONFIGURE_OPTIONS="${{ matrix.vcpkg_opts }}"
+          fi
           
-          # 3. Install Libraries for Target
+          # 4. Install Libraries for Target
           $VCPKG_ROOT/vcpkg install libogg opus --triplet ${{ matrix.triplet }}
 
       - name: Configure CMake
