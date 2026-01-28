@@ -191,7 +191,7 @@ jobs:
         run: |
           # 1. Define Paths
           VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
-          BUILD_DIR="build"
+          BUILD_DIR="$(pwd)/build"
           MERGED_LIB="build/libopusfile_combined.a"
 
           # 2. Find the input libraries (Handle .a or .lib extensions)
