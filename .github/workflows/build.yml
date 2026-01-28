@@ -31,14 +31,29 @@ jobs:
             setup_cmd: choco install mingw --forcex86
             extra_cmake_args: '-G "MinGW Makefiles"'
 
-          # --- ANDROID ---
-          - name: Android ARM64
+          # --- ANDROID (The Full Set) ---
+          - name: Android ARM64 (v8a)
             os: ubuntu-latest
             triplet: arm64-android
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
 
+          - name: Android ARM32 (v7a)
+            os: ubuntu-latest
+            triplet: arm-android
+            extra_cmake_args: "-DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-24"
+
+          - name: Android x86_64
+            os: ubuntu-latest
+            triplet: x64-android
+            extra_cmake_args: "-DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-24"
+
+          - name: Android x86
+            os: ubuntu-latest
+            triplet: x86-android
+            extra_cmake_args: "-DANDROID_ABI=x86 -DANDROID_PLATFORM=android-24"
+
           # --- iOS ---
-          - name: iOS ARM64
+          - name: iOS ARM64 (Device)
             os: macos-latest
             triplet: arm64-ios
             extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
@@ -46,6 +61,11 @@ jobs:
           - name: iOS Simulator (x64)
             os: macos-latest
             triplet: x64-ios
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
+
+          - name: iOS Simulator (ARM64)
+            os: macos-latest
+            triplet: arm64-ios-simulator
             extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
 
           # --- macOS ---
@@ -67,7 +87,7 @@ jobs:
             cross_cc: aarch64-linux-gnu-gcc
             cross_cxx: aarch64-linux-gnu-g++
 
-          # THE FIX TARGET: ARM 32-bit (armhf)
+          # THE SPECIAL CASE: Linux ARM 32-bit (Requires Patch)
           - name: Linux ARM (armhf)
             os: ubuntu-latest
             triplet: arm-linux
@@ -76,7 +96,7 @@ jobs:
               sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
             cross_cc: arm-linux-gnueabihf-gcc
             cross_cxx: arm-linux-gnueabihf-g++
-            # Enable the patch step for this specific job
+            # Only enable the patch for this specific job
             patch_opus: true
 
           - name: Linux RISC-V 64
@@ -110,18 +130,14 @@ jobs:
             ./bootstrap-vcpkg.sh
           fi
 
-      # --- THE "UNBREAKABLE" FIX ---
-      # This step modifies the vcpkg recipe for Opus safely.
-      # We replace the function call 'vcpkg_cmake_configure(' with one that includes our flag immediately.
-      # This avoids messing with 'vcpkg_check_features' or other parts of the file.
-      - name: Patch Opus for ARM32
+      # --- PATCH STEP (Only runs for Linux armhf) ---
+      - name: Patch Opus for ARM32 Linux
         if: matrix.patch_opus
         run: |
           echo "Patching Opus portfile to disable intrinsics on ARM32..."
           PORTFILE="$VCPKG_ROOT/ports/opus/portfile.cmake"
           
-          # Replace the function start. 
-          # Matches "vcpkg_cmake_configure(" and inserts the option right inside the parenthesis.
+          # Replace the function call start to inject the option
           sed -i 's/vcpkg_cmake_configure(/vcpkg_cmake_configure(OPTIONS -DOPUS_DISABLE_INTRINSICS=ON /g' "$PORTFILE"
           
           echo "--- PATCHED PORTFILE CONTENT ---"
@@ -129,16 +145,16 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # 1. Install Host Tools FIRST
+          # 1. Install Host Tools FIRST (Standard x64)
           $VCPKG_ROOT/vcpkg install vcpkg-cmake --triplet=x64-linux --host-triplet=x64-linux || true
           
-          # 2. Set Cross Compilers
+          # 2. Set Cross Compilers (if defined in matrix)
           if [ ! -z "${{ matrix.cross_cc }}" ]; then
             export CC=${{ matrix.cross_cc }}
             export CXX=${{ matrix.cross_cxx }}
           fi
           
-          # 3. Install Libraries
+          # 3. Install Libraries for Target
           $VCPKG_ROOT/vcpkg install libogg opus --triplet ${{ matrix.triplet }}
 
       - name: Configure CMake
