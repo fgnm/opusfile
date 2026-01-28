@@ -1,6 +1,6 @@
 name: Build LibOpusFile
 
-on: [push, pull_request, workflow_dispatch]
+on: [push, pull_request]
 
 jobs:
   build:
@@ -14,9 +14,9 @@ jobs:
           - name: Linux x86_64
             os: ubuntu-latest
             triplet: x64-linux
-            # No extra setup needed for native linux
 
           # --- WINDOWS (MinGW) ---
+          # Note: Windows runners are slower to setup
           - name: Windows MinGW x64
             os: windows-latest
             triplet: x64-mingw-static
@@ -31,6 +31,7 @@ jobs:
           - name: Android ARM64
             os: ubuntu-latest
             triplet: arm64-android
+            # Vcpkg handles the NDK, but we pass these to ensure CMake knows the target
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
 
           # --- iOS ---
@@ -53,16 +54,16 @@ jobs:
             os: macos-latest
             triplet: x64-osx
 
-          # --- CROSS-COMPILE LINUX (The tricky ones) ---
-          # Vcpkg 'community' triplets for Linux cross-compile require 
-          # us to install the GCC cross-compilers on the runner first.
+          # --- CROSS-COMPILE LINUX ---
           - name: Linux ARM64 (aarch64)
             os: ubuntu-latest
             triplet: arm64-linux
             setup_cmd: |
               sudo apt-get update
               sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            env_vars: "CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++"
+            # specific exports to force vcpkg to use these compilers
+            cc_var: aarch64-linux-gnu-gcc
+            cxx_var: aarch64-linux-gnu-g++
 
           - name: Linux ARM (armhf)
             os: ubuntu-latest
@@ -70,7 +71,8 @@ jobs:
             setup_cmd: |
               sudo apt-get update
               sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
-            env_vars: "CC=arm-linux-gnueabihf-gcc CXX=arm-linux-gnueabihf-g++"
+            cc_var: arm-linux-gnueabihf-gcc
+            cxx_var: arm-linux-gnueabihf-g++
 
           - name: Linux RISC-V 64
             os: ubuntu-latest
@@ -78,44 +80,52 @@ jobs:
             setup_cmd: |
               sudo apt-get update
               sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
-            env_vars: "CC=riscv64-linux-gnu-gcc CXX=riscv64-linux-gnu-g++"
+            cc_var: riscv64-linux-gnu-gcc
+            cxx_var: riscv64-linux-gnu-g++
 
     env:
-      # Tell vcpkg where to install packages
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
       - uses: actions/checkout@v3
 
-      # 1. Install System Dependencies (Cross Compilers or MinGW tools)
+      # 1. Install System Compilers (if needed)
       - name: Install System Dependencies
         if: matrix.setup_cmd
         run: ${{ matrix.setup_cmd }}
         shell: bash
 
-      # 2. Setup Vcpkg
+      # 2. Manual Vcpkg Setup (The Fix)
+      # We clone specifically to a folder and bootstrap it.
       - name: Setup Vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 'master' # Uses latest vcpkg
-          vcpkgDirectory: ${{ github.workspace }}/vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          cd $VCPKG_ROOT
+          # Bootstrap script depends on OS
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bootstrap-vcpkg.bat
+          else
+            ./bootstrap-vcpkg.sh
+          fi
+        shell: bash
 
-      # 3. Install Dependencies (Ogg, Opus) using Vcpkg
-      # This builds libogg and libopus for the specific target architecture
+      # 3. Install LibOpus and LibOgg
+      # We explicitly export CC/CXX so vcpkg uses the cross-compilers for Linux targets
       - name: Install Dependencies
         run: |
-          # Export CC/CXX for Linux cross-compiles if defined in matrix
-          ${{ matrix.env_vars }}
+          if [ ! -z "${{ matrix.cc_var }}" ]; then
+            export CC=${{ matrix.cc_var }}
+            export CXX=${{ matrix.cxx_var }}
+          fi
           
-          # Install dependencies for the requested triplet
           $VCPKG_ROOT/vcpkg install libogg libopus --triplet ${{ matrix.triplet }}
+        shell: bash
 
       # 4. Configure CMake
       - name: Configure CMake
         run: |
-          # Use the vcpkg toolchain file so CMake can find the deps we just built
           cmake -B build -S . \
-            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DOP_DISABLE_HTTP=ON \
