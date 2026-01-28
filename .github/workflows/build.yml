@@ -189,11 +189,11 @@ jobs:
 
       - name: Merge Libraries
         run: |
-          # 1. Define Absolute Paths for Input
-          # We use $(pwd) to ensure we find opusfile correctly
+          # 1. Define Paths
           VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
           BUILD_DIR="$(pwd)/build"
           
+          # 2. Find input libraries
           LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
           LIBOPUS=$(find "$VCPKG_LIB_DIR" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
           LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
@@ -205,42 +205,42 @@ jobs:
 
           # 3. Merge Strategy
           if [ "${{ runner.os }}" = "macOS" ]; then
+            # macOS: Use libtool
             libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
 
           else
-            echo "Detected Linux/Windows. Using ar repack strategy."
+            # Linux / Windows: Use MRI Script (ar -M)
+            echo "Using MRI script strategy..."
             
-            mkdir -p build/merged_objs
-            cd build/merged_objs
+            # Create a clean temp directory to work in
+            mkdir -p build/merging
             
-            # Define Output Path RELATIVE to 'build/merged_objs'
-            # 'build/merged_objs' -> 'build/' is one level up (..)
-            MERGED_LIB_REL="../libopusfile_combined.a"
-            rm -f "$MERGED_LIB_REL"
+            # Copy libraries to the temp folder with simple names
+            # This avoids all issues with spaces, backslashes, or drive letters in paths
+            cp "$LIBOGG" build/merging/libogg.a
+            cp "$LIBOPUS" build/merging/libopus.a
+            cp "$LIBOPUSFILE" build/merging/libopusfile.a
+            
+            cd build/merging
 
-            # Function to extract and append
-            merge_lib() {
-              local DIR_NAME=$1
-              local LIB_PATH=$2
-              echo "Processing $DIR_NAME..."
-              mkdir -p "$DIR_NAME" && cd "$DIR_NAME"
-              
-              # Extract objects
-              ar x "$LIB_PATH"
-              
-              # Append to archive
-              # Note: We are now inside subfolder, so we add another '../' to the path
-              ar crs "../$MERGED_LIB_REL" *.o
-              
-              cd ..
-            }
-
-            merge_lib "ogg" "$LIBOGG"
-            merge_lib "opus" "$LIBOPUS"
-            merge_lib "opusfile" "$LIBOPUSFILE"
-
+            # Generate the MRI script
+            # 'create' makes the new archive
+            # 'addlib' merges the contents of the inputs
+            echo "create libopusfile_combined.a" > merge.mri
+            echo "addlib libogg.a" >> merge.mri
+            echo "addlib libopus.a" >> merge.mri
+            echo "addlib libopusfile.a" >> merge.mri
+            echo "save" >> merge.mri
+            echo "end" >> merge.mri
+            
+            # Execute the script
+            ar -M < merge.mri
+            
+            # Move the result back to build dir
+            mv libopusfile_combined.a ../
+            
             echo "Success! Created:"
-            ls -l "$MERGED_LIB_REL"
+            ls -l ../libopusfile_combined.a
           fi
 
       - name: Upload Binaries
