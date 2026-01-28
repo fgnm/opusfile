@@ -6,6 +6,9 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash  # <--- FORCE BASH EVERYWHERE (Fixes Windows Syntax)
     strategy:
       fail-fast: false
       matrix:
@@ -20,11 +23,14 @@ jobs:
             os: windows-latest
             triplet: x64-mingw-static
             setup_cmd: choco install mingw
+            # Force CMake to use MinGW generator, otherwise it defaults to Visual Studio
+            extra_cmake_args: '-G "MinGW Makefiles"'
 
           - name: Windows MinGW x86
             os: windows-latest
             triplet: x86-mingw-static
             setup_cmd: choco install mingw --forcex86
+            extra_cmake_args: '-G "MinGW Makefiles"'
 
           # --- ANDROID ---
           - name: Android ARM64
@@ -53,14 +59,15 @@ jobs:
             triplet: x64-osx
 
           # --- CROSS-COMPILE LINUX ---
+          # We define specific variables for the compilers here
           - name: Linux ARM64 (aarch64)
             os: ubuntu-latest
             triplet: arm64-linux
             setup_cmd: |
               sudo apt-get update
               sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            cc_var: aarch64-linux-gnu-gcc
-            cxx_var: aarch64-linux-gnu-g++
+            cross_cc: aarch64-linux-gnu-gcc
+            cross_cxx: aarch64-linux-gnu-g++
 
           - name: Linux ARM (armhf)
             os: ubuntu-latest
@@ -68,8 +75,8 @@ jobs:
             setup_cmd: |
               sudo apt-get update
               sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
-            cc_var: arm-linux-gnueabihf-gcc
-            cxx_var: arm-linux-gnueabihf-g++
+            cross_cc: arm-linux-gnueabihf-gcc
+            cross_cxx: arm-linux-gnueabihf-g++
 
           - name: Linux RISC-V 64
             os: ubuntu-latest
@@ -77,44 +84,56 @@ jobs:
             setup_cmd: |
               sudo apt-get update
               sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
-            cc_var: riscv64-linux-gnu-gcc
-            cxx_var: riscv64-linux-gnu-g++
+            cross_cc: riscv64-linux-gnu-gcc
+            cross_cxx: riscv64-linux-gnu-g++
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
+      # fetch-depth: 0 fixes the "fatal: No names found" error in git describe
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Install System Dependencies
         if: matrix.setup_cmd
         run: ${{ matrix.setup_cmd }}
-        shell: bash
 
       - name: Setup Vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
           cd $VCPKG_ROOT
+          # Bootstrap depending on OS
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./bootstrap-vcpkg.bat
           else
             ./bootstrap-vcpkg.sh
           fi
-        shell: bash
 
       - name: Install Dependencies
         run: |
-          if [ ! -z "${{ matrix.cc_var }}" ]; then
-            export CC=${{ matrix.cc_var }}
-            export CXX=${{ matrix.cxx_var }}
+          # 1. Install Host Tools FIRST (using default compiler)
+          # This prevents the ARM compiler from trying to build x86 tools and crashing
+          $VCPKG_ROOT/vcpkg install vcpkg-cmake --triplet=x64-linux --host-triplet=x64-linux || true
+          
+          # 2. Set Cross Compilers (if defined)
+          if [ ! -z "${{ matrix.cross_cc }}" ]; then
+            export CC=${{ matrix.cross_cc }}
+            export CXX=${{ matrix.cross_cxx }}
           fi
           
-          # FIXED: Used 'opus' instead of 'libopus'
+          # 3. Install Target Libraries
           $VCPKG_ROOT/vcpkg install libogg opus --triplet ${{ matrix.triplet }}
-        shell: bash
 
       - name: Configure CMake
         run: |
+          # Re-export cross compilers for the actual project build
+          if [ ! -z "${{ matrix.cross_cc }}" ]; then
+            export CC=${{ matrix.cross_cc }}
+            export CXX=${{ matrix.cross_cxx }}
+          fi
+
           cmake -B build -S . \
             -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
@@ -137,3 +156,4 @@ jobs:
             build/*.dylib
             build/*.dll
             build/Release/*.lib
+            build/Release/*.dll
