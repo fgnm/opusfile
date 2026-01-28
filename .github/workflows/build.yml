@@ -198,3 +198,5 @@ jobs:
             build/*.dll
             build/Release/*.lib
             build/Release/*.dll
+            vcpkg/installed/*/lib/*.a
+            vcpkg/installed/*/lib/*.lib
