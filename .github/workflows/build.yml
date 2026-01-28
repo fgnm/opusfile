@@ -37,11 +37,12 @@ jobs:
             triplet: arm64-android
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
 
-          # THE FIX: Force NEON=ON for ARM32 because NDK r24+ requires it
+          # ANDROID ARM32 (v7a) - The Fix Target
           - name: Android ARM32 (v7a)
             os: ubuntu-latest
             triplet: arm-android
-            vcpkg_opts: "-DANDROID_ARM_NEON=ON"
+            # We enable a specific patch flag for this job
+            patch_android_arm: true
             extra_cmake_args: "-DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-24"
 
           - name: Android x86_64
@@ -67,7 +68,6 @@ jobs:
 
           - name: iOS Simulator (ARM64)
             os: macos-latest
-            # Note: This triplet targets Apple Silicon simulators
             triplet: arm64-ios-simulator
             extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
 
@@ -90,7 +90,7 @@ jobs:
             cross_cc: aarch64-linux-gnu-gcc
             cross_cxx: aarch64-linux-gnu-g++
 
-          # THE SPECIAL CASE: Linux ARM 32-bit (Requires Patch)
+          # Linux ARM 32-bit (armhf)
           - name: Linux ARM (armhf)
             os: ubuntu-latest
             triplet: arm-linux
@@ -99,7 +99,6 @@ jobs:
               sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
             cross_cc: arm-linux-gnueabihf-gcc
             cross_cxx: arm-linux-gnueabihf-g++
-            # Only enable the patch for this specific job
             patch_opus: true
 
           - name: Linux RISC-V 64
@@ -133,37 +132,40 @@ jobs:
             ./bootstrap-vcpkg.sh
           fi
 
-      # --- PATCH STEP (Only runs for Linux armhf) ---
-      - name: Patch Opus for ARM32 Linux
+      # --- PATCH 1: Linux ARM32 (Opus Intrinsics) ---
+      - name: Patch Opus for Linux ARM32
         if: matrix.patch_opus
         run: |
           echo "Patching Opus portfile to disable intrinsics on ARM32..."
           PORTFILE="$VCPKG_ROOT/ports/opus/portfile.cmake"
-          
-          # Replace the function call start to inject the option safely
           sed -i 's/vcpkg_cmake_configure(/vcpkg_cmake_configure(OPTIONS -DOPUS_DISABLE_INTRINSICS=ON /g' "$PORTFILE"
-          
-          echo "--- PATCHED PORTFILE CONTENT ---"
           cat "$PORTFILE"
+
+      # --- PATCH 2: Android ARM32 (Force NEON) ---
+      - name: Patch Triplet for Android ARM32
+        if: matrix.patch_android_arm
+        run: |
+          echo "Patching arm-android triplet to force NEON..."
+          TRIPLET_FILE="$VCPKG_ROOT/triplets/community/arm-android.cmake"
+          
+          # Append the CMake flag to VCPKG_CMAKE_CONFIGURE_OPTIONS inside the triplet file
+          echo 'set(VCPKG_CMAKE_CONFIGURE_OPTIONS "-DANDROID_ARM_NEON=ON")' >> "$TRIPLET_FILE"
+          
+          echo "--- PATCHED TRIPLET ---"
+          cat "$TRIPLET_FILE"
 
       - name: Install Dependencies
         run: |
-          # 1. Install Host Tools FIRST (Standard x64)
+          # 1. Install Host Tools FIRST
           $VCPKG_ROOT/vcpkg install vcpkg-cmake --triplet=x64-linux --host-triplet=x64-linux || true
           
-          # 2. Set Cross Compilers (if defined in matrix)
+          # 2. Set Cross Compilers
           if [ ! -z "${{ matrix.cross_cc }}" ]; then
             export CC=${{ matrix.cross_cc }}
             export CXX=${{ matrix.cross_cxx }}
           fi
-
-          # 3. Apply Vcpkg Options (Fixes Android ARM32)
-          # This appends -DANDROID_ARM_NEON=ON to the configuration command
-          if [ ! -z "${{ matrix.vcpkg_opts }}" ]; then
-            export VCPKG_CMAKE_CONFIGURE_OPTIONS="${{ matrix.vcpkg_opts }}"
-          fi
           
-          # 4. Install Libraries for Target
+          # 3. Install Libraries
           $VCPKG_ROOT/vcpkg install libogg opus --triplet ${{ matrix.triplet }}
 
       - name: Configure CMake
