@@ -35,6 +35,7 @@ jobs:
             folder: windows_x86
 
           # --- ANDROID ---
+          # Android builds run on Ubuntu, so we use Linux paths for NDK
           - name: Android ARM64 (v8a)
             os: ubuntu-latest
             triplet: arm64-android
@@ -42,7 +43,6 @@ jobs:
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
             folder: android_abi_arm64_v8a
 
-          # ANDROID ARM32 (v7a) - The Fix Target
           - name: Android ARM32 (v7a)
             os: ubuntu-latest
             triplet: arm-android
@@ -53,8 +53,8 @@ jobs:
 
           - name: Android x86_64
             os: ubuntu-latest
-            is_android: true
             triplet: x64-android
+            is_android: true
             extra_cmake_args: "-DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-24"
             folder: android_abi_x86_64
 
@@ -106,7 +106,6 @@ jobs:
             cross_cxx: aarch64-linux-gnu-g++
             folder: linux_arm64
 
-          # Linux ARM 32-bit (armhf)
           - name: Linux ARM (armhf)
             os: ubuntu-latest
             triplet: arm-linux
@@ -161,45 +160,32 @@ jobs:
             ./bootstrap-vcpkg.sh
           fi
 
-      # --- PATCH 1: Linux ARM32 (Opus Intrinsics) ---
       - name: Patch Opus for Linux ARM32
         if: matrix.patch_opus
         run: |
-          echo "Patching Opus portfile to disable intrinsics on ARM32..."
           PORTFILE="$VCPKG_ROOT/ports/opus/portfile.cmake"
           sed -i 's/vcpkg_cmake_configure(/vcpkg_cmake_configure(OPTIONS -DOPUS_DISABLE_INTRINSICS=ON /g' "$PORTFILE"
-          cat "$PORTFILE"
 
-      # --- PATCH 2: Android ARM32 (Force NEON) ---
       - name: Patch Triplet for Android ARM32
         if: matrix.patch_android_arm
         run: |
-          echo "Patching arm-android triplet to force NEON..."
           TRIPLET_FILE="$VCPKG_ROOT/triplets/community/arm-android.cmake"
-          
-          # Append the CMake flag to VCPKG_CMAKE_CONFIGURE_OPTIONS inside the triplet file
           echo 'set(VCPKG_CMAKE_CONFIGURE_OPTIONS "-DANDROID_ARM_NEON=ON")' >> "$TRIPLET_FILE"
-          
-          echo "--- PATCHED TRIPLET ---"
-          cat "$TRIPLET_FILE"
 
       - name: Install Dependencies
         run: |
-          # 1. Install Host Tools FIRST
           $VCPKG_ROOT/vcpkg install vcpkg-cmake --triplet=x64-linux --host-triplet=x64-linux || true
           
-          # 2. Set Cross Compilers
           if [ ! -z "${{ matrix.cross_cc }}" ]; then
             export CC=${{ matrix.cross_cc }}
             export CXX=${{ matrix.cross_cxx }}
           fi
           
-          # 3. Install Libraries
           $VCPKG_ROOT/vcpkg install libogg opus --triplet ${{ matrix.triplet }}
 
       - name: Configure CMake
         run: |
-          # Define Arguments Array
+          # Use an array for args to handle quoting cleanly
           ARGS=(
             "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
             "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
@@ -209,12 +195,10 @@ jobs:
             "-DOP_DISABLE_DOCS=ON"
           )
 
-          # CHAINLOAD ANDROID TOOLCHAIN
-          # This is the FIX: It forces CMake to use the NDK compilers, not the system gcc
           if [ "${{ matrix.is_android }}" == "true" ]; then
+             # Crucial: Use the NDK Toolchain so we get correct object files
              ANDROID_CHAINLOAD="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
              ARGS+=("-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$ANDROID_CHAINLOAD")
-             echo "Chainloading Android Toolchain: $ANDROID_CHAINLOAD"
           fi
 
           if [ ! -z "${{ matrix.cross_cc }}" ]; then
@@ -222,129 +206,160 @@ jobs:
             export CXX=${{ matrix.cross_cxx }}
           fi
 
-          # Add matrix extra args
           ARGS+=(${{ matrix.extra_cmake_args }})
-
           cmake -B build -S . "${ARGS[@]}"
 
       - name: Build
         run: cmake --build build --config Release
 
-      - name: Merge Libraries
+      - name: Debug and Repack
         run: |
+          # --- ENABLE DEBUGGING ---
+          set -x  # This prints every command executed. If it fails, you see where.
+          set -e  # Fail immediately on error
+
+          # --- 1. DETERMINE ARCHIVER TOOL ---
+          # Default to system 'ar'
           TOOL_AR="ar"
           TOOL_RANLIB="ranlib"
-          
-          # Detect Android Toolchain from build cache to find llvm-ar
+
           if [ "${{ matrix.is_android }}" == "true" ]; then
-             CACHE_FILE="build/CMakeCache.txt"
-             # Grep the compiler path used by CMake
-             CC_PATH=$(grep "CMAKE_C_COMPILER:FILEPATH" "$CACHE_FILE" | cut -d= -f2)
-             if [ -f "$CC_PATH" ]; then
-                BIN_DIR=$(dirname "$CC_PATH")
-                TOOL_AR="$BIN_DIR/llvm-ar"
-                TOOL_RANLIB="$BIN_DIR/llvm-ranlib"
-                echo "Using Android Tools: $TOOL_AR"
-             else
-                echo "Warning: Could not detect NDK tools. Using system defaults."
-             fi
+             # Android jobs run on Ubuntu, so we look in the Linux prebuilt folder of the NDK
+             TOOL_AR="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+             TOOL_RANLIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
+             
+             echo "Configured for Android. Using: $TOOL_AR"
           fi
+
+          if [ "${{ runner.os }}" == "Windows" ]; then
+             # On Windows (Git Bash), 'ar' should be in the path from MinGW setup
+             echo "Configured for Windows. Assuming 'ar' is in path."
+             # Verify it exists
+             which ar || echo "WARNING: ar not found in path!"
+          fi
+
+          # --- 2. LOCATE FILES ---
+          echo "Locating library files..."
           
           VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
           BUILD_DIR="$(pwd)/build"
+
+          # Use find to locate files (handling potential .lib vs .a naming)
           LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
           LIBOPUS=$(find "$VCPKG_LIB_DIR" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
-          LIBOPUSFILE_ORIG=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
+          LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
 
-          if [ "${{ runner.os }}" = "macOS" ]; then
-             libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE_ORIG" "$LIBOPUS" "$LIBOGG"
-             cp "$LIBOPUSFILE_ORIG" "$BUILD_DIR/libopusfile.a"
-             cp "$LIBOPUS" "$BUILD_DIR/libopus.a"
-             cp "$LIBOGG" "$BUILD_DIR/libogg.a"
-          else
-             # Generic Repack Logic for Linux/Windows/Android
-             mkdir -p build/repack_stage
-             
-             repack_safe() {
-               ABS_PATH=$(readlink -f "$1")
-               LIB_NAME="$2"
-               WORKDIR="build/repack_stage/$LIB_NAME"
-               mkdir -p "$WORKDIR"
-               cd "$WORKDIR"
-               "$TOOL_AR" x "$ABS_PATH"
-               "$TOOL_AR" crs "../$LIB_NAME.a" *.o
-               "$TOOL_RANLIB" "../$LIB_NAME.a"
-               cd ../../..
-             }
+          echo "Found:"
+          echo "  OGG: $LIBOGG"
+          echo "  OPUS: $LIBOPUS"
+          echo "  OPUSFILE: $LIBOPUSFILE"
 
-             repack_safe "$LIBOPUSFILE_ORIG" "libopusfile"
-             repack_safe "$LIBOPUS" "libopus"
-             repack_safe "$LIBOGG" "libogg"
-             
-             mkdir -p build/repack_stage/combined
-             cd build/repack_stage/combined
-             "$TOOL_AR" x "../libopusfile.a"
-             "$TOOL_AR" x "../libopus.a"
-             "$TOOL_AR" x "../libogg.a"
-             "$TOOL_AR" crs "../libopusfile_combined.a" *.o
-             "$TOOL_RANLIB" "../libopusfile_combined.a"
-             cd ../../..
-             
-             mv build/repack_stage/libopusfile.a "$BUILD_DIR/"
-             mv build/repack_stage/libopus.a "$BUILD_DIR/"
-             mv build/repack_stage/libogg.a "$BUILD_DIR/"
-             mv build/repack_stage/libopusfile_combined.a "$BUILD_DIR/"
+          # Fail if any are missing
+          if [ -z "$LIBOGG" ] || [ -z "$LIBOPUS" ] || [ -z "$LIBOPUSFILE" ]; then
+             echo "ERROR: One or more input libraries could not be found!"
+             exit 1
           fi
 
-      - name: Organize Staging (Libs + Includes)
+          # --- 3. EXECUTE REPACK ---
+          # Strategy: Copy all three to a temp dir, extract all, combine.
+          
+          if [ "${{ runner.os }}" == "macOS" ]; then
+             echo "Using libtool for macOS..."
+             libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
+             
+             # Also normalize names to .a in build dir
+             cp "$LIBOPUSFILE" "$BUILD_DIR/libopusfile.a"
+             cp "$LIBOPUS" "$BUILD_DIR/libopus.a"
+             cp "$LIBOGG" "$BUILD_DIR/libogg.a"
+             
+          else
+             echo "Starting Generic/Android Repack..."
+             
+             # Create a clean workspace
+             WORK_DIR="build/repack_work"
+             rm -rf "$WORK_DIR"
+             mkdir -p "$WORK_DIR"
+             
+             # Function to copy and extract
+             extract_lib() {
+                local LIB_PATH="$1"
+                local NAME="$2"
+                
+                echo "Extracting $NAME..."
+                mkdir -p "$WORK_DIR/$NAME"
+                cp "$LIB_PATH" "$WORK_DIR/$NAME/lib.a"
+                
+                # Go into dir to extract
+                pushd "$WORK_DIR/$NAME" > /dev/null
+                "$TOOL_AR" x lib.a
+                rm lib.a
+                popd > /dev/null
+             }
+
+             extract_lib "$LIBOGG" "ogg"
+             extract_lib "$LIBOPUS" "opus"
+             extract_lib "$LIBOPUSFILE" "opusfile"
+             
+             # Combine
+             echo "Creating combined library..."
+             mkdir -p "$WORK_DIR/combined"
+             cd "$WORK_DIR/combined"
+             
+             # We glob all .o files from the extracted folders
+             # Important: We must ensure no naming conflicts. Usually these libs are safe.
+             cp ../ogg/*.o .
+             cp ../opus/*.o .
+             cp ../opusfile/*.o .
+             
+             "$TOOL_AR" crs "$BUILD_DIR/libopusfile_combined.a" *.o
+             "$TOOL_RANLIB" "$BUILD_DIR/libopusfile_combined.a"
+             
+             # Also create standalone repacked libs (to fix thin archives)
+             cd ..
+             "$TOOL_AR" crs "$BUILD_DIR/libogg.a" ogg/*.o
+             "$TOOL_AR" crs "$BUILD_DIR/libopus.a" opus/*.o
+             "$TOOL_AR" crs "$BUILD_DIR/libopusfile.a" opusfile/*.o
+             
+             "$TOOL_RANLIB" "$BUILD_DIR/libogg.a"
+             "$TOOL_RANLIB" "$BUILD_DIR/libopus.a"
+             "$TOOL_RANLIB" "$BUILD_DIR/libopusfile.a"
+             
+             echo "Repack complete."
+          fi
+          
+          # List results
+          ls -l "$BUILD_DIR"/*.a
+
+      - name: Organize Staging
         run: |
-          # 1. Setup Folders
           TARGET="staging/${{ matrix.folder }}"
           TARGET_LIB="$TARGET/lib"
           TARGET_INC="$TARGET/include"
           mkdir -p "$TARGET_LIB" "$TARGET_INC"
 
-          echo "Organizing artifacts into $TARGET..."
-
-          # 2. Find and Copy Libraries
-          VCPKG_INSTALLED_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}"
           BUILD_DIR="$(pwd)/build"
-
-          LIBOGG=$(find "$VCPKG_INSTALLED_DIR/lib" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
-          LIBOPUS=$(find "$VCPKG_INSTALLED_DIR/lib" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
-          LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
-          COMBINED=$(find "$BUILD_DIR" -name "*combined.a" -o -name "*combined.lib" | head -n 1)
-
-          cp "$LIBOGG" "$TARGET_LIB/"
-          cp "$LIBOPUS" "$TARGET_LIB/"
-          cp "$LIBOPUSFILE" "$TARGET_LIB/"
-          cp "$COMBINED" "$TARGET_LIB/"
-
-          # 3. Find and Copy Headers
-          # VCPKG usually puts headers in installed/triplet/include/
-          # OpusFile headers are in the source 'include' folder
           
-          echo "Copying headers..."
-          
-          # Copy Vcpkg headers (ogg/opus)
-          # We use cp -r -n to copy contents without overwriting if duplicates exist (though they shouldn't overlap)
-          if [ -d "$VCPKG_INSTALLED_DIR/include" ]; then
-             cp -r "$VCPKG_INSTALLED_DIR/include/"* "$TARGET_INC/"
+          # Copy the files we just created/verified
+          cp "$BUILD_DIR/libogg.a" "$TARGET_LIB/"
+          cp "$BUILD_DIR/libopus.a" "$TARGET_LIB/"
+          cp "$BUILD_DIR/libopusfile.a" "$TARGET_LIB/"
+          cp "$BUILD_DIR/libopusfile_combined.a" "$TARGET_LIB/"
+
+          # Copy Headers
+          VCPKG_INC_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/include"
+          if [ -d "$VCPKG_INC_DIR" ]; then
+             cp -r "$VCPKG_INC_DIR/"* "$TARGET_INC/"
           fi
-
-          # Copy OpusFile headers from source directory (./include)
           if [ -d "include" ]; then
              cp -r "include/"* "$TARGET_INC/"
           fi
-
-          echo "Final Structure of $TARGET:"
-          ls -R "$TARGET"
 
       - name: Upload Partial Artifact
         uses: actions/upload-artifact@v4
         with:
           name: part-${{ matrix.folder }}
           path: staging/
+          retention-days: 1
 
   package:
     name: Package All Platforms
@@ -354,14 +369,9 @@ jobs:
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
-          # This pattern matches all artifacts uploaded by the matrix
           pattern: part-*
-          # This merges all downloaded contents into one directory
           merge-multiple: true
           path: final_package
-
-      - name: Display Structure
-        run: ls -R final_package
 
       - name: Upload Final Unified Artifact
         uses: actions/upload-artifact@v4
