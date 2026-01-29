@@ -17,6 +17,7 @@ jobs:
           - name: Linux x86_64
             os: ubuntu-latest
             triplet: x64-linux
+            folder: linux_x86_64
 
           # --- WINDOWS (MinGW) ---
           - name: Windows MinGW x64
@@ -24,18 +25,21 @@ jobs:
             triplet: x64-mingw-static
             setup_cmd: choco install mingw
             extra_cmake_args: '-G "MinGW Makefiles"'
+            folder: windows_x86_64
 
           - name: Windows MinGW x86
             os: windows-latest
             triplet: x86-mingw-static
             setup_cmd: choco install mingw --forcex86
             extra_cmake_args: '-G "MinGW Makefiles"'
+            folder: windows_x86
 
           # --- ANDROID ---
           - name: Android ARM64 (v8a)
             os: ubuntu-latest
             triplet: arm64-android
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
+            folder: android_abi_arm64_v8a
 
           # ANDROID ARM32 (v7a) - The Fix Target
           - name: Android ARM32 (v7a)
@@ -44,41 +48,49 @@ jobs:
             # We enable a specific patch flag for this job
             patch_android_arm: true
             extra_cmake_args: "-DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-24"
+            folder: android_abi_armeabi_v7a
 
           - name: Android x86_64
             os: ubuntu-latest
             triplet: x64-android
             extra_cmake_args: "-DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-24"
+            folder: android_abi_x86_64
 
           - name: Android x86
             os: ubuntu-latest
             triplet: x86-android
             extra_cmake_args: "-DANDROID_ABI=x86 -DANDROID_PLATFORM=android-24"
+            folder: android_abi_x86
 
           # --- iOS ---
           - name: iOS ARM64 (Device)
             os: macos-latest
             triplet: arm64-ios
             extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
+            folder: ios_iphoneos_arm64
 
           - name: iOS Simulator (x64)
             os: macos-latest
             triplet: x64-ios
             extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
+            folder: ios_iphonesimulator_x86_64
 
           - name: iOS Simulator (ARM64)
             os: macos-latest
             triplet: arm64-ios-simulator
             extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS"
+            folder: ios_iphonesimulator_arm64
 
           # --- macOS ---
           - name: macOS ARM64 (Apple Silicon)
             os: macos-latest
             triplet: arm64-osx
+            folder: macosx_arm64
 
           - name: macOS x64 (Intel)
             os: macos-latest
             triplet: x64-osx
+            folder: macosx_x86_64
 
           # --- CROSS-COMPILE LINUX ---
           - name: Linux ARM64 (aarch64)
@@ -89,6 +101,7 @@ jobs:
               sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
             cross_cc: aarch64-linux-gnu-gcc
             cross_cxx: aarch64-linux-gnu-g++
+            folder: linux_arm64
 
           # Linux ARM 32-bit (armhf)
           - name: Linux ARM (armhf)
@@ -100,6 +113,7 @@ jobs:
             cross_cc: arm-linux-gnueabihf-gcc
             cross_cxx: arm-linux-gnueabihf-g++
             patch_opus: true
+            folder: linux_arm
 
           - name: Linux RISC-V 64
             os: ubuntu-latest
@@ -109,6 +123,7 @@ jobs:
               sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
             cross_cc: riscv64-linux-gnu-gcc
             cross_cxx: riscv64-linux-gnu-g++
+            folder: linux_riscv64
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
@@ -243,17 +258,37 @@ jobs:
             ls -l ../libopusfile_combined.a
           fi
 
+      - name: Organize Artifacts
+        run: |
+          # 1. Define and Create Target Folder
+          FOLDER_NAME="${{ matrix.folder }}"
+          TARGET="staging/$FOLDER_NAME"
+          mkdir -p "$TARGET"
+          
+          echo "Organizing artifacts into $TARGET..."
+
+          # 2. Define Source Paths
+          VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
+          BUILD_DIR="$(pwd)/build"
+
+          # 3. Find Files (again, to be safe across steps)
+          # We use generic wildcards to catch .a (Linux/Mac/MinGW) or .lib (Windows MSVC if used later)
+          LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
+          LIBOPUS=$(find "$VCPKG_LIB_DIR" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
+          LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
+          COMBINED=$(find "$BUILD_DIR" -name "*combined.a" -o -name "*combined.lib" | head -n 1)
+
+          # 4. Copy to Target Folder
+          if [ -f "$LIBOGG" ]; then cp "$LIBOGG" "$TARGET/"; else echo "Warning: Ogg not found"; fi
+          if [ -f "$LIBOPUS" ]; then cp "$LIBOPUS" "$TARGET/"; else echo "Warning: Opus not found"; fi
+          if [ -f "$LIBOPUSFILE" ]; then cp "$LIBOPUSFILE" "$TARGET/"; else echo "Warning: OpusFile not found"; fi
+          if [ -f "$COMBINED" ]; then cp "$COMBINED" "$TARGET/"; else echo "Warning: Combined lib not found"; fi
+
+          echo "Contents of $TARGET:"
+          ls -l "$TARGET"
+
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
         with:
-          name: libopusfile-${{ matrix.name }}
-          path: |
-            build/*_combined.a
-            build/*.a
-            build/*.so
-            build/*.dylib
-            build/*.dll
-            build/Release/*.lib
-            build/Release/*.dll
-            vcpkg/installed/*/lib/*.a
-            vcpkg/installed/*/lib/*.lib
+          name: ${{ matrix.folder }}
+          path: staging/
