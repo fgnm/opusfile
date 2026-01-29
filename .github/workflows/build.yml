@@ -225,6 +225,7 @@ jobs:
 
           # 2. LOCATE FILES
           VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
+          # USE ABSOLUTE PATH FOR BUILD DIR TO PREVENT 'cd' ERRORS
           BUILD_DIR="$(pwd)/build"
 
           LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
@@ -242,6 +243,7 @@ jobs:
              libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
              
              # Safely copy individual files, avoiding copy-to-self error
+             # checks if Source and Dest strings are different
              if [ "$LIBOPUSFILE" != "$BUILD_DIR/libopusfile.a" ]; then
                 cp "$LIBOPUSFILE" "$BUILD_DIR/libopusfile.a"
              fi
@@ -255,11 +257,12 @@ jobs:
           else
              echo "Using ar repack (Windows/Linux/Android)..."
              
-             WORK_DIR="build/repack_work"
+             # USE ABSOLUTE PATH FOR WORKSPACE
+             WORK_DIR="$(pwd)/build/repack_work"
              rm -rf "$WORK_DIR"
              mkdir -p "$WORK_DIR/combined"
              
-             # Extract function that copies ALL files from archive, not just *.o
+             # Extract function using Absolute Paths
              extract_lib() {
                 local LIB_PATH="$1"
                 local NAME="$2"
@@ -273,8 +276,7 @@ jobs:
                 rm lib.a
                 popd > /dev/null
                 
-                # Copy ALL extracted content to combined (glob all files, ignore errors if empty but shouldn't be)
-                # We use find . -type f to be safe against glob failure
+                # Copy ALL extracted content to combined using find to avoid glob errors
                 find "$DEST" -type f -exec cp {} "$WORK_DIR/combined/" \;
              }
 
@@ -288,7 +290,7 @@ jobs:
              "$TOOL_RANLIB" "$BUILD_DIR/libopusfile_combined.a"
              
              # Create Individual (Fix Thin Archive)
-             # Reuse extracted files from their specific folders
+             # Use absolute paths for cd to prevent 'No such file' errors
              cd "$WORK_DIR/ogg"
              "$TOOL_AR" crs "$BUILD_DIR/libogg.a" *
              "$TOOL_RANLIB" "$BUILD_DIR/libogg.a"
