@@ -23,15 +23,15 @@ jobs:
           - name: Windows MinGW x64
             os: windows-latest
             triplet: x64-mingw-static
-            setup_cmd: choco install mingw
+            mingw_arch: x64
             extra_cmake_args: '-G "MinGW Makefiles"'
             folder: windows_x86_64
 
           - name: Windows MinGW x86
             os: windows-latest
             triplet: x86-mingw-static
-            setup_cmd: choco install mingw --forcex86
-            extra_cmake_args: '-G "MinGW Makefiles" -DCMAKE_C_FLAGS="-m32" -DCMAKE_CXX_FLAGS="-m32" -DCMAKE_SHARED_LINKER_FLAGS="-m32" -DCMAKE_EXE_LINKER_FLAGS="-m32"'
+            mingw_arch: x86
+            extra_cmake_args: '-G "MinGW Makefiles"'
             folder: windows_x86
 
           # --- ANDROID ---
@@ -135,6 +135,12 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
+
+      - name: Setup MinGW (Windows)
+        if: runner.os == 'Windows'
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: ${{ matrix.mingw_arch }}
 
       - name: Setup Android NDK
         if: matrix.is_android
