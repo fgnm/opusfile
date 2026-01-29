@@ -35,7 +35,6 @@ jobs:
             folder: windows_x86
 
           # --- ANDROID ---
-          # Android builds run on Ubuntu, so we use Linux paths for NDK
           - name: Android ARM64 (v8a)
             os: ubuntu-latest
             triplet: arm64-android
@@ -185,7 +184,6 @@ jobs:
 
       - name: Configure CMake
         run: |
-          # Use an array for args to handle quoting cleanly
           ARGS=(
             "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
             "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
@@ -196,7 +194,6 @@ jobs:
           )
 
           if [ "${{ matrix.is_android }}" == "true" ]; then
-             # Crucial: Use the NDK Toolchain so we get correct object files
              ANDROID_CHAINLOAD="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
              ARGS+=("-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$ANDROID_CHAINLOAD")
           fi
@@ -214,120 +211,99 @@ jobs:
 
       - name: Debug and Repack
         run: |
-          # --- ENABLE DEBUGGING ---
-          set -x  # This prints every command executed. If it fails, you see where.
-          set -e  # Fail immediately on error
+          set -x
+          set -e
 
-          # --- 1. DETERMINE ARCHIVER TOOL ---
-          # Default to system 'ar'
+          # 1. SETUP TOOLS
           TOOL_AR="ar"
           TOOL_RANLIB="ranlib"
 
           if [ "${{ matrix.is_android }}" == "true" ]; then
-             # Android jobs run on Ubuntu, so we look in the Linux prebuilt folder of the NDK
              TOOL_AR="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
              TOOL_RANLIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
-             
-             echo "Configured for Android. Using: $TOOL_AR"
           fi
 
-          if [ "${{ runner.os }}" == "Windows" ]; then
-             # On Windows (Git Bash), 'ar' should be in the path from MinGW setup
-             echo "Configured for Windows. Assuming 'ar' is in path."
-             # Verify it exists
-             which ar || echo "WARNING: ar not found in path!"
-          fi
-
-          # --- 2. LOCATE FILES ---
-          echo "Locating library files..."
-          
+          # 2. LOCATE FILES
           VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
           BUILD_DIR="$(pwd)/build"
 
-          # Use find to locate files (handling potential .lib vs .a naming)
           LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
           LIBOPUS=$(find "$VCPKG_LIB_DIR" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
           LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
 
-          echo "Found:"
-          echo "  OGG: $LIBOGG"
-          echo "  OPUS: $LIBOPUS"
-          echo "  OPUSFILE: $LIBOPUSFILE"
-
-          # Fail if any are missing
           if [ -z "$LIBOGG" ] || [ -z "$LIBOPUS" ] || [ -z "$LIBOPUSFILE" ]; then
-             echo "ERROR: One or more input libraries could not be found!"
+             echo "ERROR: Missing libraries!"
              exit 1
           fi
 
-          # --- 3. EXECUTE REPACK ---
-          # Strategy: Copy all three to a temp dir, extract all, combine.
-          
+          # 3. REPACK STRATEGY
           if [ "${{ runner.os }}" == "macOS" ]; then
-             echo "Using libtool for macOS..."
+             echo "Using libtool (macOS)..."
              libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
              
-             # Also normalize names to .a in build dir
-             cp "$LIBOPUSFILE" "$BUILD_DIR/libopusfile.a"
-             cp "$LIBOPUS" "$BUILD_DIR/libopus.a"
-             cp "$LIBOGG" "$BUILD_DIR/libogg.a"
+             # Safely copy individual files, avoiding copy-to-self error
+             if [ "$LIBOPUSFILE" != "$BUILD_DIR/libopusfile.a" ]; then
+                cp "$LIBOPUSFILE" "$BUILD_DIR/libopusfile.a"
+             fi
+             if [ "$LIBOPUS" != "$BUILD_DIR/libopus.a" ]; then
+                cp "$LIBOPUS" "$BUILD_DIR/libopus.a"
+             fi
+             if [ "$LIBOGG" != "$BUILD_DIR/libogg.a" ]; then
+                cp "$LIBOGG" "$BUILD_DIR/libogg.a"
+             fi
              
           else
-             echo "Starting Generic/Android Repack..."
+             echo "Using ar repack (Windows/Linux/Android)..."
              
-             # Create a clean workspace
              WORK_DIR="build/repack_work"
              rm -rf "$WORK_DIR"
-             mkdir -p "$WORK_DIR"
+             mkdir -p "$WORK_DIR/combined"
              
-             # Function to copy and extract
+             # Extract function that copies ALL files from archive, not just *.o
              extract_lib() {
                 local LIB_PATH="$1"
                 local NAME="$2"
+                local DEST="$WORK_DIR/$NAME"
                 
-                echo "Extracting $NAME..."
-                mkdir -p "$WORK_DIR/$NAME"
-                cp "$LIB_PATH" "$WORK_DIR/$NAME/lib.a"
+                mkdir -p "$DEST"
+                cp "$LIB_PATH" "$DEST/lib.a"
                 
-                # Go into dir to extract
-                pushd "$WORK_DIR/$NAME" > /dev/null
+                pushd "$DEST" > /dev/null
                 "$TOOL_AR" x lib.a
                 rm lib.a
                 popd > /dev/null
+                
+                # Copy ALL extracted content to combined (glob all files, ignore errors if empty but shouldn't be)
+                # We use find . -type f to be safe against glob failure
+                find "$DEST" -type f -exec cp {} "$WORK_DIR/combined/" \;
              }
 
              extract_lib "$LIBOGG" "ogg"
              extract_lib "$LIBOPUS" "opus"
              extract_lib "$LIBOPUSFILE" "opusfile"
              
-             # Combine
-             echo "Creating combined library..."
-             mkdir -p "$WORK_DIR/combined"
+             # Create Combined
              cd "$WORK_DIR/combined"
-             
-             # We glob all .o files from the extracted folders
-             # Important: We must ensure no naming conflicts. Usually these libs are safe.
-             cp ../ogg/*.o .
-             cp ../opus/*.o .
-             cp ../opusfile/*.o .
-             
-             "$TOOL_AR" crs "$BUILD_DIR/libopusfile_combined.a" *.o
+             "$TOOL_AR" crs "$BUILD_DIR/libopusfile_combined.a" *
              "$TOOL_RANLIB" "$BUILD_DIR/libopusfile_combined.a"
              
-             # Also create standalone repacked libs (to fix thin archives)
-             cd ..
-             "$TOOL_AR" crs "$BUILD_DIR/libogg.a" ogg/*.o
-             "$TOOL_AR" crs "$BUILD_DIR/libopus.a" opus/*.o
-             "$TOOL_AR" crs "$BUILD_DIR/libopusfile.a" opusfile/*.o
-             
+             # Create Individual (Fix Thin Archive)
+             # Reuse extracted files from their specific folders
+             cd "$WORK_DIR/ogg"
+             "$TOOL_AR" crs "$BUILD_DIR/libogg.a" *
              "$TOOL_RANLIB" "$BUILD_DIR/libogg.a"
+             
+             cd "$WORK_DIR/opus"
+             "$TOOL_AR" crs "$BUILD_DIR/libopus.a" *
              "$TOOL_RANLIB" "$BUILD_DIR/libopus.a"
+             
+             cd "$WORK_DIR/opusfile"
+             "$TOOL_AR" crs "$BUILD_DIR/libopusfile.a" *
              "$TOOL_RANLIB" "$BUILD_DIR/libopusfile.a"
              
              echo "Repack complete."
           fi
           
-          # List results
           ls -l "$BUILD_DIR"/*.a
 
       - name: Organize Staging
@@ -339,13 +315,11 @@ jobs:
 
           BUILD_DIR="$(pwd)/build"
           
-          # Copy the files we just created/verified
           cp "$BUILD_DIR/libogg.a" "$TARGET_LIB/"
           cp "$BUILD_DIR/libopus.a" "$TARGET_LIB/"
           cp "$BUILD_DIR/libopusfile.a" "$TARGET_LIB/"
           cp "$BUILD_DIR/libopusfile_combined.a" "$TARGET_LIB/"
 
-          # Copy Headers
           VCPKG_INC_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/include"
           if [ -d "$VCPKG_INC_DIR" ]; then
              cp -r "$VCPKG_INC_DIR/"* "$TARGET_INC/"
