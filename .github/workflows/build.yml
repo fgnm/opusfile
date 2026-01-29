@@ -68,19 +68,19 @@ jobs:
           - name: iOS ARM64 (Device)
             os: macos-latest
             triplet: arm64-ios
-            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64"
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphoneos"
             folder: ios_iphoneos_arm64
 
           - name: iOS Simulator (x64)
             os: macos-latest
             triplet: x64-ios
-            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=x86_64"
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_SYSROOT=iphonesimulator"
             folder: ios_iphonesimulator_x86_64
 
           - name: iOS Simulator (ARM64)
             os: macos-latest
             triplet: arm64-ios-simulator
-            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64"
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphonesimulator"
             folder: ios_iphonesimulator_arm64
 
           # --- macOS ---
