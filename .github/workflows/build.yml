@@ -38,6 +38,7 @@ jobs:
           - name: Android ARM64 (v8a)
             os: ubuntu-latest
             triplet: arm64-android
+            is_android: true
             extra_cmake_args: "-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24"
             folder: android_abi_arm64_v8a
 
@@ -45,13 +46,14 @@ jobs:
           - name: Android ARM32 (v7a)
             os: ubuntu-latest
             triplet: arm-android
-            # We enable a specific patch flag for this job
+            is_android: true
             patch_android_arm: true
             extra_cmake_args: "-DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-24"
             folder: android_abi_armeabi_v7a
 
           - name: Android x86_64
             os: ubuntu-latest
+            is_android: true
             triplet: x64-android
             extra_cmake_args: "-DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-24"
             folder: android_abi_x86_64
@@ -59,6 +61,7 @@ jobs:
           - name: Android x86
             os: ubuntu-latest
             triplet: x86-android
+            is_android: true
             extra_cmake_args: "-DANDROID_ABI=x86 -DANDROID_PLATFORM=android-24"
             folder: android_abi_x86
 
@@ -133,6 +136,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Android NDK
+        if: matrix.is_android
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r25c
+
+      - name: Export NDK Env
+        if: matrix.is_android
+        run: echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+
       - name: Install System Dependencies
         if: matrix.setup_cmd
         run: ${{ matrix.setup_cmd }}
@@ -185,77 +199,101 @@ jobs:
 
       - name: Configure CMake
         run: |
+          # Define Arguments Array
+          ARGS=(
+            "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+            "-DCMAKE_BUILD_TYPE=Release"
+            "-DOP_DISABLE_HTTP=ON"
+            "-DOP_DISABLE_EXAMPLES=ON"
+            "-DOP_DISABLE_DOCS=ON"
+          )
+
+          # CHAINLOAD ANDROID TOOLCHAIN
+          # This is the FIX: It forces CMake to use the NDK compilers, not the system gcc
+          if [ "${{ matrix.is_android }}" == "true" ]; then
+             ANDROID_CHAINLOAD="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+             ARGS+=("-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$ANDROID_CHAINLOAD")
+             echo "Chainloading Android Toolchain: $ANDROID_CHAINLOAD"
+          fi
+
           if [ ! -z "${{ matrix.cross_cc }}" ]; then
             export CC=${{ matrix.cross_cc }}
             export CXX=${{ matrix.cross_cxx }}
           fi
 
-          cmake -B build -S . \
-            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOP_DISABLE_HTTP=ON \
-            -DOP_DISABLE_EXAMPLES=ON \
-            -DOP_DISABLE_DOCS=ON \
-            ${{ matrix.extra_cmake_args }}
+          # Add matrix extra args
+          ARGS+=(${{ matrix.extra_cmake_args }})
+
+          cmake -B build -S . "${ARGS[@]}"
 
       - name: Build
         run: cmake --build build --config Release
 
       - name: Merge Libraries
         run: |
-          # 1. Define Paths
+          TOOL_AR="ar"
+          TOOL_RANLIB="ranlib"
+          
+          # Detect Android Toolchain from build cache to find llvm-ar
+          if [ "${{ matrix.is_android }}" == "true" ]; then
+             CACHE_FILE="build/CMakeCache.txt"
+             # Grep the compiler path used by CMake
+             CC_PATH=$(grep "CMAKE_C_COMPILER:FILEPATH" "$CACHE_FILE" | cut -d= -f2)
+             if [ -f "$CC_PATH" ]; then
+                BIN_DIR=$(dirname "$CC_PATH")
+                TOOL_AR="$BIN_DIR/llvm-ar"
+                TOOL_RANLIB="$BIN_DIR/llvm-ranlib"
+                echo "Using Android Tools: $TOOL_AR"
+             else
+                echo "Warning: Could not detect NDK tools. Using system defaults."
+             fi
+          fi
+          
           VCPKG_LIB_DIR="$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib"
           BUILD_DIR="$(pwd)/build"
-          
-          # 2. Find input libraries
           LIBOGG=$(find "$VCPKG_LIB_DIR" -name "*ogg.a" -o -name "*ogg.lib" | head -n 1)
           LIBOPUS=$(find "$VCPKG_LIB_DIR" -name "*opus.a" -o -name "*opus.lib" | head -n 1)
-          LIBOPUSFILE=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
+          LIBOPUSFILE_ORIG=$(find "$BUILD_DIR" -name "*opusfile.a" -o -name "*opusfile.lib" | head -n 1)
 
-          echo "Found libraries:"
-          echo "  - Ogg: $LIBOGG"
-          echo "  - Opus: $LIBOPUS"
-          echo "  - OpusFile: $LIBOPUSFILE"
-
-          # 3. Merge Strategy
           if [ "${{ runner.os }}" = "macOS" ]; then
-            # macOS: Use libtool
-            libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE" "$LIBOPUS" "$LIBOGG"
-
+             libtool -static -o "$BUILD_DIR/libopusfile_combined.a" "$LIBOPUSFILE_ORIG" "$LIBOPUS" "$LIBOGG"
+             cp "$LIBOPUSFILE_ORIG" "$BUILD_DIR/libopusfile.a"
+             cp "$LIBOPUS" "$BUILD_DIR/libopus.a"
+             cp "$LIBOGG" "$BUILD_DIR/libogg.a"
           else
-            # Linux / Windows: Use MRI Script (ar -M)
-            echo "Using MRI script strategy..."
-            
-            # Create a clean temp directory to work in
-            mkdir -p build/merging
-            
-            # Copy libraries to the temp folder with simple names
-            # This avoids all issues with spaces, backslashes, or drive letters in paths
-            cp "$LIBOGG" build/merging/libogg.a
-            cp "$LIBOPUS" build/merging/libopus.a
-            cp "$LIBOPUSFILE" build/merging/libopusfile.a
-            
-            cd build/merging
+             # Generic Repack Logic for Linux/Windows/Android
+             mkdir -p build/repack_stage
+             
+             repack_safe() {
+               ABS_PATH=$(readlink -f "$1")
+               LIB_NAME="$2"
+               WORKDIR="build/repack_stage/$LIB_NAME"
+               mkdir -p "$WORKDIR"
+               cd "$WORKDIR"
+               "$TOOL_AR" x "$ABS_PATH"
+               "$TOOL_AR" crs "../$LIB_NAME.a" *.o
+               "$TOOL_RANLIB" "../$LIB_NAME.a"
+               cd ../../..
+             }
 
-            # Generate the MRI script
-            # 'create' makes the new archive
-            # 'addlib' merges the contents of the inputs
-            echo "create libopusfile_combined.a" > merge.mri
-            echo "addlib libogg.a" >> merge.mri
-            echo "addlib libopus.a" >> merge.mri
-            echo "addlib libopusfile.a" >> merge.mri
-            echo "save" >> merge.mri
-            echo "end" >> merge.mri
-            
-            # Execute the script
-            ar -M < merge.mri
-            
-            # Move the result back to build dir
-            mv libopusfile_combined.a ../
-            
-            echo "Success! Created:"
-            ls -l ../libopusfile_combined.a
+             repack_safe "$LIBOPUSFILE_ORIG" "libopusfile"
+             repack_safe "$LIBOPUS" "libopus"
+             repack_safe "$LIBOGG" "libogg"
+             
+             mkdir -p build/repack_stage/combined
+             cd build/repack_stage/combined
+             "$TOOL_AR" x "../libopusfile.a"
+             "$TOOL_AR" x "../libopus.a"
+             "$TOOL_AR" x "../libogg.a"
+             "$TOOL_AR" crs "../libopusfile_combined.a" *.o
+             "$TOOL_RANLIB" "../libopusfile_combined.a"
+             cd ../../..
+             
+             mv build/repack_stage/libopusfile.a "$BUILD_DIR/"
+             mv build/repack_stage/libopus.a "$BUILD_DIR/"
+             mv build/repack_stage/libogg.a "$BUILD_DIR/"
+             mv build/repack_stage/libopusfile_combined.a "$BUILD_DIR/"
           fi
 
       - name: Organize Staging (Libs + Includes)
