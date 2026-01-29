@@ -31,7 +31,7 @@ jobs:
             os: windows-latest
             triplet: x86-mingw-static
             setup_cmd: choco install mingw --forcex86
-            extra_cmake_args: '-G "MinGW Makefiles"'
+            extra_cmake_args: '-G "MinGW Makefiles" -DCMAKE_C_FLAGS="-m32" -DCMAKE_CXX_FLAGS="-m32" -DCMAKE_SHARED_LINKER_FLAGS="-m32" -DCMAKE_EXE_LINKER_FLAGS="-m32"'
             folder: windows_x86
 
           # --- ANDROID ---
@@ -68,32 +68,32 @@ jobs:
           - name: iOS ARM64 (Device)
             os: macos-latest
             triplet: arm64-ios
-            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphoneos"
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0"
             folder: ios_iphoneos_arm64
 
           - name: iOS Simulator (x64)
             os: macos-latest
             triplet: x64-ios
-            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_SYSROOT=iphonesimulator"
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0"
             folder: ios_iphonesimulator_x86_64
 
           - name: iOS Simulator (ARM64)
             os: macos-latest
             triplet: arm64-ios-simulator
-            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphonesimulator"
+            extra_cmake_args: "-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0"
             folder: ios_iphonesimulator_arm64
 
           # --- macOS ---
           - name: macOS ARM64 (Apple Silicon)
             os: macos-latest
             triplet: arm64-osx
-            extra_cmake_args: "-DCMAKE_OSX_ARCHITECTURES=arm64"
+            extra_cmake_args: "-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
             folder: macosx_arm64
 
           - name: macOS x64 (Intel)
             os: macos-latest
             triplet: x64-osx
-            extra_cmake_args: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
+            extra_cmake_args: "-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13"
             folder: macosx_x86_64
 
           # --- CROSS-COMPILE LINUX ---
