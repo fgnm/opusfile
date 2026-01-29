@@ -287,8 +287,31 @@ jobs:
           echo "Contents of $TARGET:"
           ls -l "$TARGET"
 
-      - name: Upload Binaries
+      - name: Upload Partial Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.folder }}
+          name: part-${{ matrix.folder }}
           path: staging/
+
+  package:
+    name: Package All Platforms
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # This pattern matches all artifacts uploaded by the matrix
+          pattern: part-*
+          # This merges all downloaded contents into one directory
+          merge-multiple: true
+          path: final_package
+
+      - name: Display Structure
+        run: ls -R final_package
+
+      - name: Upload Final Unified Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libopusfile-all-platforms
+          path: final_package/
