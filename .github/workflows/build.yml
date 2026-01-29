@@ -23,14 +23,16 @@ jobs:
           - name: Windows MinGW x64
             os: windows-latest
             triplet: x64-mingw-static
-            mingw_arch: x64
+            msystem: MINGW64
+            msys_packages: mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake
             extra_cmake_args: '-G "MinGW Makefiles"'
             folder: windows_x86_64
 
           - name: Windows MinGW x86
             os: windows-latest
             triplet: x86-mingw-static
-            mingw_arch: x86
+            msystem: MINGW32
+            msys_packages: mingw-w64-i686-toolchain mingw-w64-i686-cmake
             extra_cmake_args: '-G "MinGW Makefiles"'
             folder: windows_x86
 
@@ -136,11 +138,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup MinGW (Windows)
+      - name: Setup MSYS2
         if: runner.os == 'Windows'
-        uses: egor-tensin/setup-mingw@v2
+        uses: msys2/setup-msys2@v2
         with:
-          platform: ${{ matrix.mingw_arch }}
+          msystem: ${{ matrix.msystem }}
+          install: ${{ matrix.msys_packages }}
+          update: true
+          path-type: inherit
 
       - name: Setup Android NDK
         if: matrix.is_android
